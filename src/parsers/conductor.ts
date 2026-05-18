@@ -136,7 +136,7 @@ function validateTask(task: ConductorTask, taskRefs: Set<string>, workflowName: 
 
   // Validate nested tasks in DECISION/FORK_JOIN
   if (task.decisionCases) {
-    for (const [caseName, caseTasks] of Object.entries(task.decisionCases)) {
+    for (const caseTasks of Object.values(task.decisionCases)) {
       for (const caseTask of caseTasks) {
         validateTask(caseTask, taskRefs, workflowName);
       }

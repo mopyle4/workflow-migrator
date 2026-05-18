@@ -8,8 +8,8 @@ import {
   WaitState,
   SucceedState,
   FailState,
-  RetryConfig,
 } from '../types/asl';
+import { MAX_PARAMETER_DEPTH } from '../utils/constants';
 
 export interface ConversionResult {
   stateMachine: ASLStateMachine;
@@ -50,17 +50,22 @@ export function convertConductorToASL(workflow: ConductorWorkflow): ConversionRe
   }
 
   // Add a terminal Succeed state
-  const lastTask = tasks[tasks.length - 1];
-  const lastStateName = toStateName(lastTask.taskReferenceName);
   const successStateName = 'WorkflowComplete';
   states[successStateName] = { Type: 'Succeed' } as SucceedState;
 
+  // Add a HandleError Fail state (referenced by Catch blocks)
+  states['HandleError'] = {
+    Type: 'Fail',
+    Error: 'WorkflowError',
+    Cause: 'An error occurred during workflow execution. Check CloudWatch Logs for details.',
+  } as FailState;
+
   // Update the last converted state to point to success
+  const lastTask = tasks[tasks.length - 1];
+  const lastStateName = toStateName(lastTask.taskReferenceName);
   const lastState = states[lastStateName];
-  if (lastState && !('End' in lastState && lastState.End)) {
-    if ('Next' in lastState) {
-      // Already has Next, leave it
-    } else {
+  if (lastState && lastState.Type !== 'Choice' && !('End' in lastState && lastState.End)) {
+    if (!('Next' in lastState)) {
       (lastState as any).Next = successStateName;
     }
   }
@@ -373,19 +378,30 @@ function convertTerminateTask(task: ConductorTask): FailState {
 /**
  * Map Conductor input parameters to Step Functions Parameters
  * Converts ${workflow.input.*} references to JsonPath ($.*)
+ *
+ * Security: Enforces maximum recursion depth to prevent stack overflow
+ * from maliciously crafted deeply-nested input parameters.
  */
 function mapInputParameters(
   params: Record<string, any>,
   warnings: string[],
-  taskName: string
+  taskName: string,
+  depth: number = 0
 ): Record<string, any> {
+  if (depth > MAX_PARAMETER_DEPTH) {
+    warnings.push(
+      `Task "${taskName}": input parameters exceed maximum nesting depth of ${MAX_PARAMETER_DEPTH}. Deep parameters skipped.`
+    );
+    return {};
+  }
+
   const mapped: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(params)) {
     if (key === 'http_request') {
       // Extract the body from HTTP request params — that's what the Lambda needs
       if (value && typeof value === 'object' && value.body) {
-        return mapInputParameters(value.body, warnings, taskName);
+        return mapInputParameters(value.body, warnings, taskName, depth + 1);
       }
       continue;
     }
@@ -395,7 +411,7 @@ function mapInputParameters(
       const jsonPath = convertConductorExpression(value);
       mapped[`${key}.$`] = jsonPath;
     } else if (typeof value === 'object' && value !== null) {
-      mapped[key] = mapInputParameters(value, warnings, taskName);
+      mapped[key] = mapInputParameters(value, warnings, taskName, depth + 1);
     } else {
       mapped[key] = value;
     }

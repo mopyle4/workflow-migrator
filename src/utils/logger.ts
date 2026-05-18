@@ -13,13 +13,6 @@ export enum LogLevel {
   DEBUG = 4,
 }
 
-export interface LogEntry {
-  level: LogLevel;
-  message: string;
-  timestamp: string;
-  context?: Record<string, unknown>;
-}
-
 class Logger {
   private level: LogLevel = LogLevel.INFO;
 
