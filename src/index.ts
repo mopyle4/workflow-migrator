@@ -1,87 +1,104 @@
 #!/usr/bin/env node
 
+/**
+ * workflow-migrator CLI
+ *
+ * Converts workflow definitions from Netflix Conductor (and other platforms)
+ * to AWS Step Functions Amazon States Language (ASL).
+ *
+ * Architecture: Command pattern (via Commander.js) with Strategy pattern
+ * for platform-specific parsers and mappers.
+ *
+ * @see README.md for usage examples
+ */
+
 import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseConductorWorkflow } from './parsers/conductor';
 import { convertConductorToASL } from './mappers/conductor-to-asl';
+import { logger, LogLevel } from './utils/logger';
+import { WorkflowMigratorError, getExitCode } from './utils/errors';
+import { SUPPORTED_PLATFORMS } from './utils/constants';
 
 const program = new Command();
 
 program
   .name('workflow-migrator')
   .description('Convert workflow definitions from Netflix Conductor to AWS Step Functions ASL')
-  .version('0.1.0');
+  .version('0.1.0')
+  .option('-v, --verbose', 'Enable verbose (debug) logging')
+  .option('-q, --quiet', 'Suppress all output except errors and ASL')
+  .hook('preAction', (thisCommand) => {
+    const opts = thisCommand.opts();
+    if (opts.quiet) {
+      logger.setLevel(LogLevel.ERROR);
+    } else if (opts.verbose) {
+      logger.setLevel(LogLevel.DEBUG);
+    }
+  });
 
 program
   .command('convert')
   .description('Convert a workflow definition to Step Functions ASL')
-  .requiredOption('--from <platform>', 'Source platform (conductor)')
+  .requiredOption('--from <platform>', `Source platform (${SUPPORTED_PLATFORMS.join(', ')})`)
   .requiredOption('--input <file>', 'Input workflow definition file')
   .option('--output <file>', 'Output ASL file (defaults to stdout)')
-  .option('--pretty', 'Pretty-print the output JSON', true)
+  .option('--no-pretty', 'Disable pretty-printing of output JSON')
   .action((options) => {
+    const { from, input, output, pretty } = options;
+
     try {
-      const { from, input, output, pretty } = options;
-
       // Validate source platform
-      if (from !== 'conductor') {
-        console.error(`Error: Unsupported source platform "${from}". Supported: conductor`);
+      if (!SUPPORTED_PLATFORMS.includes(from)) {
+        logger.error(`Unsupported source platform: "${from}"`, {
+          supported: SUPPORTED_PLATFORMS,
+        });
         process.exit(1);
       }
 
-      // Validate input file exists
+      // Resolve input path
       const inputPath = path.resolve(input);
-      if (!fs.existsSync(inputPath)) {
-        console.error(`Error: Input file not found: ${inputPath}`);
-        process.exit(1);
-      }
 
       // Parse the source workflow
-      console.error(`\n🔄 Parsing ${from} workflow: ${path.basename(inputPath)}`);
+      logger.info(`Parsing ${from} workflow: ${path.basename(inputPath)}`);
       const workflow = parseConductorWorkflow(inputPath);
-      console.error(`   Found ${workflow.tasks.length} tasks in workflow "${workflow.name}"`);
+      logger.info(`Found ${workflow.tasks.length} tasks in workflow "${workflow.name}"`);
 
       // Convert to ASL
-      console.error(`\n⚡ Converting to Step Functions ASL...`);
+      logger.info('Converting to Step Functions ASL...');
       const result = convertConductorToASL(workflow);
 
       // Output warnings
       if (result.warnings.length > 0) {
-        console.error(`\n⚠️  Warnings (${result.warnings.length}):`);
+        logger.warn(`${result.warnings.length} conversion warning(s):`);
         for (const warning of result.warnings) {
-          console.error(`   • ${warning}`);
+          logger.warn(`  ${warning}`);
         }
       }
 
       // Output metadata
-      console.error(`\n📊 Conversion Summary:`);
-      console.error(`   Source tasks: ${result.metadata.sourceTaskCount}`);
-      console.error(`   Generated states: ${result.metadata.generatedStateCount}`);
-      if (result.metadata.unsupportedConstructs.length > 0) {
-        console.error(
-          `   Unsupported constructs: ${result.metadata.unsupportedConstructs.join(', ')}`
-        );
-      }
+      logger.info('Conversion complete', {
+        sourceTasks: result.metadata.sourceTaskCount,
+        generatedStates: result.metadata.generatedStateCount,
+        unsupported: result.metadata.unsupportedConstructs,
+      });
 
       // Write output
-      const jsonOutput = pretty
+      const jsonOutput = pretty !== false
         ? JSON.stringify(result.stateMachine, null, 2)
         : JSON.stringify(result.stateMachine);
 
       if (output) {
         const outputPath = path.resolve(output);
-        fs.writeFileSync(outputPath, jsonOutput);
-        console.error(`\n✅ ASL written to: ${outputPath}`);
+        fs.writeFileSync(outputPath, jsonOutput, 'utf-8');
+        logger.info(`ASL written to: ${outputPath}`);
       } else {
-        // Write ASL to stdout (warnings/metadata go to stderr)
-        console.log(jsonOutput);
+        // Write ASL to stdout (all other output goes to stderr via logger)
+        process.stdout.write(jsonOutput + '\n');
       }
-
-      console.error('');
-    } catch (error: any) {
-      console.error(`\n❌ Error: ${error.message}`);
-      process.exit(2);
+    } catch (error: unknown) {
+      handleError(error);
     }
   });
 
@@ -92,21 +109,17 @@ program
   .action((options) => {
     try {
       const inputPath = path.resolve(options.input);
-      if (!fs.existsSync(inputPath)) {
-        console.error(`Error: Input file not found: ${inputPath}`);
-        process.exit(1);
-      }
-
       const workflow = parseConductorWorkflow(inputPath);
-      console.log(`✅ Valid Conductor workflow: "${workflow.name}" (v${workflow.version})`);
-      console.log(`   Tasks: ${workflow.tasks.length}`);
-      console.log(`   Task types: ${[...new Set(workflow.tasks.map((t) => t.type))].join(', ')}`);
+
+      logger.info(`Valid Conductor workflow: "${workflow.name}" (v${workflow.version})`);
+      logger.info(`Tasks: ${workflow.tasks.length}`);
+      logger.info(`Task types: ${[...new Set(workflow.tasks.map((t) => t.type))].join(', ')}`);
+
       if (workflow.timeoutSeconds) {
-        console.log(`   Timeout: ${workflow.timeoutSeconds}s`);
+        logger.info(`Timeout: ${workflow.timeoutSeconds}s`);
       }
-    } catch (error: any) {
-      console.error(`❌ Invalid workflow: ${error.message}`);
-      process.exit(2);
+    } catch (error: unknown) {
+      handleError(error);
     }
   });
 
@@ -114,26 +127,49 @@ program
   .command('supported')
   .description('List supported source platforms and construct mappings')
   .action(() => {
-    console.log(`\nSupported Source Platforms:`);
-    console.log(`  ✅ conductor  — Netflix Conductor JSON DSL`);
-    console.log(`  🔜 camunda    — Camunda BPMN 2.0 XML (coming soon)`);
-    console.log(`\nConductor Construct Mapping:`);
-    console.log(`  ┌─────────────────────┬──────────────────────────────┐`);
-    console.log(`  │ Conductor           │ Step Functions                │`);
-    console.log(`  ├─────────────────────┼──────────────────────────────┤`);
-    console.log(`  │ HTTP / SIMPLE       │ Task (Lambda Invoke)         │`);
-    console.log(`  │ DECISION / SWITCH   │ Choice                       │`);
-    console.log(`  │ FORK_JOIN           │ Parallel                     │`);
-    console.log(`  │ JOIN                │ (implicit in Parallel)       │`);
-    console.log(`  │ SUB_WORKFLOW        │ Task (StartExecution)        │`);
-    console.log(`  │ WAIT                │ Wait                         │`);
-    console.log(`  │ TERMINATE           │ Fail                         │`);
-    console.log(`  │ DO_WHILE            │ Choice + loop pattern        │`);
-    console.log(`  └─────────────────────┴──────────────────────────────┘`);
-    console.log(`\nExpression Mapping:`);
-    console.log(`  \${workflow.input.field}     → $.field`);
-    console.log(`  \${taskRef.output.field}     → $.taskRef.field`);
-    console.log(``);
+    const output = `
+Supported Source Platforms:
+  ✅ conductor  — Netflix Conductor JSON DSL
+  🔜 camunda    — Camunda BPMN 2.0 XML (coming soon)
+
+Conductor → Step Functions Construct Mapping:
+  ┌─────────────────────┬──────────────────────────────┐
+  │ Conductor           │ Step Functions                │
+  ├─────────────────────┼──────────────────────────────┤
+  │ HTTP / SIMPLE       │ Task (Lambda Invoke)         │
+  │ DECISION / SWITCH   │ Choice                       │
+  │ FORK_JOIN           │ Parallel                     │
+  │ JOIN                │ (implicit in Parallel)       │
+  │ SUB_WORKFLOW        │ Task (StartExecution)        │
+  │ WAIT                │ Wait                         │
+  │ TERMINATE           │ Fail                         │
+  │ DO_WHILE            │ Choice + loop pattern        │
+  └─────────────────────┴──────────────────────────────┘
+
+Expression Mapping:
+  \${workflow.input.field}     → $.field
+  \${taskRef.output.field}     → $.taskRef.field
+`;
+    process.stdout.write(output);
   });
+
+/**
+ * Centralized error handler with structured output and appropriate exit codes.
+ */
+function handleError(error: unknown): never {
+  if (error instanceof WorkflowMigratorError) {
+    logger.error(error.message, error.context);
+    process.exit(getExitCode(error));
+  }
+
+  if (error instanceof Error) {
+    logger.error(`Unexpected error: ${error.message}`);
+    logger.debug('Stack trace', { stack: error.stack });
+    process.exit(99);
+  }
+
+  logger.error('An unknown error occurred');
+  process.exit(99);
+}
 
 program.parse();

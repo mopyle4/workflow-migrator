@@ -1,6 +1,32 @@
-node_modules/
+# Build output
 dist/
-*.js
-*.d.ts
-!jest.config.js
+
+# Dependencies
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Environment
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.log
+tmp/
+
+# Generated output (users generate these locally)
+*.asl.json
