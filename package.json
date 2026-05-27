@@ -1,0 +1,38 @@
+{
+  "name": "workflow-migrator",
+  "version": "0.1.0",
+  "description": "Convert workflow definitions from Netflix Conductor (and other platforms) to AWS Step Functions ASL",
+  "main": "dist/index.js",
+  "bin": {
+    "workflow-migrator": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "jest",
+    "lint": "eslint src/"
+  },
+  "keywords": [
+    "aws",
+    "step-functions",
+    "conductor",
+    "workflow",
+    "migration",
+    "asl",
+    "orchestration"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "12.1.0",
+    "fast-xml-parser": "5.8.0"
+  },
+  "devDependencies": {
+    "@types/jest": "29.5.12",
+    "@types/node": "20.14.0",
+    "jest": "29.7.0",
+    "ts-jest": "29.1.4",
+    "ts-node": "10.9.2",
+    "typescript": "5.4.5"
+  }
+}
